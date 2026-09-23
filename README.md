@@ -24,6 +24,11 @@
 - **1-клік лаунчери:** готові подвійні кліки для Mac (`.app`) та Windows (`.bat` з автоматичним створенням ярлика на Робочому столі).
 - **🔄 Вбудоване самооновлення (Self-Update):** програма автоматично перевіряє наявність нових версій і оновлюється в 1 клік без ручного перекачування архівів.
 
+### 🍺 Встановлення на macOS через Homebrew (Рекомендовано)
+```bash
+brew install illiaranok/tap/media-downloader
+```
+
 ### 🚀 Як запустити з коду
 ```bash
 # 1. Клонувати репозиторій
@@ -53,7 +58,12 @@ python3 media_downloader_app.py
 - **Audio Extraction:** High-bitrate stereo MP3 extraction in one tap.
 - **🔄 In-App Self-Update:** Automatically checks for new releases and updates in 1-click without re-downloading archives.
 
-### 🚀 Quick Start
+### 🍺 Install on macOS via Homebrew (Recommended)
+```bash
+brew install illiaranok/tap/media-downloader
+```
+
+### 🚀 Quick Start (From Source)
 ```bash
 git clone https://github.com/IlliaRanok/media-downloader.git
 cd media-downloader
