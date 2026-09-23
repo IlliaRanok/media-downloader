@@ -20,7 +20,7 @@ import shutil
 import tempfile
 import time
 
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.1.2"
 VERSION_URLS = [
     "https://media-downloader-web.web.app/version.json",
     "https://raw.githubusercontent.com/IlliaRanok/media-downloader/main/version.json",
@@ -30,10 +30,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 VENV_BIN = os.path.join(SCRIPT_DIR, ".venv", "bin")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 
-# Пошук yt-dlp у поточній папці, у .venv або в системі
+# Пошук yt-dlp у поточній папці, у .app, у .venv або в системі
 YT_DLP_BIN = None
 for candidate in [
     os.path.join(SCRIPT_DIR, "yt-dlp-standalone"),
+    os.path.join(SCRIPT_DIR, "Media_Downloader.app", "Contents", "Resources", "yt-dlp-standalone"),
+    os.path.join(SCRIPT_DIR, "Завантажувач_Відео.app", "Contents", "Resources", "yt-dlp-standalone"),
     os.path.join(SCRIPT_DIR, "yt-dlp"),
     os.path.join(VENV_BIN, "yt-dlp-standalone"),
     os.path.join(VENV_BIN, "yt-dlp"),
@@ -372,7 +374,7 @@ def get_playlist_urls(url, ui_lang="en"):
         "--flat-playlist",
         "--print", "%(url)s",
         "--no-warnings",
-        "--extractor-args", "youtube:player_client=android,ios,web",
+        "--extractor-args", "youtube:player_client=visionos,ios,web",
     ]
     if NODE_BIN and os.path.exists(NODE_BIN):
         cmd.extend(["--js-runtimes", f"node:{NODE_BIN}"])
@@ -417,7 +419,7 @@ def get_video_audio_languages(url):
         "--ffmpeg-location", FFMPEG_BIN_DIR,
         "--print", "%(formats.:.language)s",
         "--no-warnings",
-        "--extractor-args", "youtube:player_client=android,ios,web",
+        "--extractor-args", "youtube:player_client=visionos,ios,web",
     ]
     if NODE_BIN and os.path.exists(NODE_BIN):
         cmd.extend(["--js-runtimes", f"node:{NODE_BIN}"])
@@ -604,35 +606,50 @@ def standardize_video_for_quicktime(filepath, ui_lang="en"):
 
 
 def get_available_browsers():
-    """Перевіряє, які браузери реально мають базу cookies на цій системі"""
+    """Перевіряє, які браузери реально мають базу cookies на цій системі та доступні для читання"""
+    def can_access_path(path):
+        if not path or not os.path.exists(path):
+            return False
+        try:
+            if os.path.isdir(path):
+                os.listdir(path)
+                return True
+            elif os.path.isfile(path):
+                with open(path, "rb") as f:
+                    f.read(1)
+                return True
+        except Exception:
+            return False
+        return False
+
     browsers = []
     chrome_paths = [
         os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Cookies"),
         os.path.expanduser("~/Library/Application Support/Google/Chrome/Profile 1/Cookies"),
         os.path.expanduser("~/AppData/Local/Google/Chrome/User Data/Default/Network/Cookies"),
     ]
-    if any(os.path.exists(p) for p in chrome_paths):
+    if any(can_access_path(p) for p in chrome_paths):
         browsers.append("chrome")
 
     ff_paths = [
         os.path.expanduser("~/Library/Application Support/Firefox/Profiles"),
         os.path.expanduser("~/AppData/Roaming/Mozilla/Firefox/Profiles"),
     ]
-    if any(os.path.exists(p) and os.listdir(p) for p in ff_paths if os.path.exists(p)):
+    if any(can_access_path(p) and os.listdir(p) for p in ff_paths if os.path.exists(p)):
         browsers.append("firefox")
 
     edge_paths = [
         os.path.expanduser("~/Library/Application Support/Microsoft Edge/Default/Cookies"),
         os.path.expanduser("~/AppData/Local/Microsoft/Edge/User Data/Default/Network/Cookies"),
     ]
-    if any(os.path.exists(p) for p in edge_paths):
+    if any(can_access_path(p) for p in edge_paths):
         browsers.append("edge")
 
     brave_paths = [
         os.path.expanduser("~/Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies"),
         os.path.expanduser("~/AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies"),
     ]
-    if any(os.path.exists(p) for p in brave_paths):
+    if any(can_access_path(p) for p in brave_paths):
         browsers.append("brave")
 
     return browsers
@@ -658,7 +675,7 @@ def download_media(url, mode, selected_lang=None, ui_lang="en", is_batch=False, 
         "--print-to-file", "after_move:filepath", track_path,
         "--no-warnings",
         "--progress",
-        "--extractor-args", "youtube:player_client=android,ios,web",
+        "--extractor-args", "youtube:player_client=visionos,ios,web",
     ]
 
     if yes_playlist:
@@ -742,7 +759,7 @@ def download_media(url, mode, selected_lang=None, ui_lang="en", is_batch=False, 
             fallback_cmd = list(cmd)
             for i, arg in enumerate(fallback_cmd):
                 if arg == "--extractor-args":
-                    fallback_cmd[i+1] = "youtube:player_client=android"
+                    fallback_cmd[i+1] = "youtube:player_client=android,web"
             proc_fb = subprocess.run(fallback_cmd)
             if proc_fb.returncode == 0:
                 process_downloaded_files()
