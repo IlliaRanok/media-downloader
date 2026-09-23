@@ -4,15 +4,18 @@ Media Downloader (YouTube, TikTok, Instagram, Twitter/X etc.)
 - 100% QuickTime Player compatibility on macOS (H.264 / AAC / MP3)
 - First-run language setup (Default: English) with persistent config
 - Audio dubbing language selector (Ukrainian, English, etc.)
+- Batch & Playlist downloads with queue progress [X/N] and summary
 - Classic high-visibility banner
 """
 
 import sys
 import os
+import re
 import ast
 import json
 import subprocess
 import shutil
+import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 VENV_BIN = os.path.join(SCRIPT_DIR, ".venv", "bin")
@@ -68,7 +71,6 @@ YELLOW = "\033[93m"
 RED = "\033[91m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
-
 
 USER_CONFIG_FILE = os.path.expanduser("~/.media_downloader_config.json")
 LOCAL_CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
@@ -142,20 +144,94 @@ def get_initial_language():
     return lang
 
 
-def get_clipboard_url():
+def extract_urls(text):
+    """Витягує всі валідні URL із тексту чи списку"""
+    if not text:
+        return []
+    matches = re.findall(r"https?://[^\s<>\"']+", text)
+    cleaned = []
+    for u in matches:
+        u = u.rstrip(".,;:)\"'>]")
+        if u and u not in cleaned:
+            cleaned.append(u)
+    return cleaned
+
+
+def get_clipboard_text():
     try:
         res = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=1)
-        text = res.stdout.strip()
-        if text.startswith("http://") or text.startswith("https://"):
-            return text
+        return res.stdout.strip()
+    except Exception:
+        return ""
+
+
+def get_clipboard_urls():
+    text = get_clipboard_text()
+    return extract_urls(text)
+
+
+def get_clipboard_url():
+    urls = get_clipboard_urls()
+    return urls[0] if urls else None
+
+
+def is_playlist_url(url):
+    """Визначає, чи є посилання плейлистом або колекцією відео"""
+    if not url:
+        return False
+    u = url.lower()
+    if ("youtube.com" in u or "youtu.be" in u) and ("list=" in u or "/playlist" in u):
+        return True
+    if "soundcloud.com" in u and "/sets/" in u:
+        return True
+    if "tiktok.com" in u and ("/collection/" in u or "/playlist/" in u):
+        return True
+    return False
+
+
+def get_playlist_urls(url, ui_lang="en"):
+    """Отримує список посилань на окремі відео з плейлиста без завантаження самих файлів"""
+    is_ua = (ui_lang == "ua")
+    print(f"\n{YELLOW}{'⏳ Отримую список відео з плейлиста...' if is_ua else '⏳ Fetching playlist video list...'}{RESET}")
+    cmd = [
+        YT_DLP_BIN,
+        "--ffmpeg-location", FFMPEG_BIN_DIR,
+        "--flat-playlist",
+        "--print", "%(url)s",
+        "--no-warnings",
+        "--extractor-args", "youtube:player_client=ios,mweb,web;formats=missing_pot",
+    ]
+    if NODE_BIN and os.path.exists(NODE_BIN):
+        cmd.extend(["--js-runtimes", f"node:{NODE_BIN}"])
+    elif QJS_BIN and os.path.exists(QJS_BIN):
+        cmd.extend(["--js-runtimes", f"quickjs:{QJS_BIN}"])
+    cmd.append(url)
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        if proc.returncode == 0 and proc.stdout.strip():
+            urls = []
+            for line in proc.stdout.strip().splitlines():
+                u = line.strip()
+                if not u:
+                    continue
+                if u.startswith("http://") or u.startswith("https://"):
+                    urls.append(u)
+                elif "youtube.com" in url or "youtu.be" in url:
+                    urls.append(f"https://www.youtube.com/watch?v={u}")
+                else:
+                    urls.append(u)
+            return urls
     except Exception:
         pass
-    return None
+    return []
 
 
 def send_macos_notification(title, message):
     try:
-        script = f'display notification "{message}" with title "{title}" sound name "Glass"'
+        t = str(title).replace('"', '\\"').replace('\n', ' ')
+        m = str(message).replace('"', '\\"').replace('\n', ' ')
+        script = f'display notification "{m}" with title "{t}" sound name "Glass"'
         subprocess.run(["osascript", "-e", script], check=False, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -279,8 +355,6 @@ def standardize_video_for_quicktime(filepath, ui_lang="en"):
     pix_fmt = probe.get("pix_fmt")
     color_range = probe.get("color_range", "tv")
 
-    # QuickTime підтримує h264/avc1. Не підтримує vp9, av1/av01, hevc без hvc1 тега тощо.
-    # Також QuickLook малює чорне прев'ю, якщо pix_fmt - це застарілий full-range yuvj420p або pc-range!
     needs_reencode = False
     if vcodec not in ["h264", "avc1"]:
         needs_reencode = True
@@ -356,11 +430,11 @@ def standardize_video_for_quicktime(filepath, ui_lang="en"):
     return filepath
 
 
-def download_media(url, mode, selected_lang, ui_lang="en"):
-    import tempfile
+def download_media(url, mode, selected_lang=None, ui_lang="en", is_batch=False, yes_playlist=False):
     is_ua = (ui_lang == "ua")
-    msg_dl = "⏳ Завантажую та оптимізую для Mac (QuickTime H.264/AAC)..." if is_ua else "⏳ Downloading and optimizing for Mac (QuickTime H.264/AAC)..."
-    print(f"\n{YELLOW}{msg_dl}{RESET}\n")
+    if not is_batch:
+        msg_dl = "⏳ Завантажую та оптимізую для Mac (QuickTime H.264/AAC)..." if is_ua else "⏳ Downloading and optimizing for Mac (QuickTime H.264/AAC)..."
+        print(f"\n{YELLOW}{msg_dl}{RESET}\n")
 
     out_template = os.path.join(DOWNLOADS_DIR, "%(title).100s [%(id)s].%(ext)s")
 
@@ -378,6 +452,11 @@ def download_media(url, mode, selected_lang, ui_lang="en"):
         "--progress",
         "--extractor-args", "youtube:player_client=ios,mweb,web;formats=missing_pot",
     ]
+
+    if yes_playlist:
+        cmd.append("--yes-playlist")
+    else:
+        cmd.append("--no-playlist")
 
     if NODE_BIN and os.path.exists(NODE_BIN):
         cmd.extend(["--js-runtimes", f"node:{NODE_BIN}"])
@@ -437,13 +516,17 @@ def download_media(url, mode, selected_lang, ui_lang="en"):
         proc = subprocess.run(cmd)
         if proc.returncode == 0:
             process_downloaded_files()
-            msg_ok = "✅ Відео успішно завантажено та готове до перегляду!" if is_ua else "✅ Download completed successfully!"
-            print(f"\n{GREEN}{BOLD}{msg_ok}{RESET}")
-            print(f"📁 {'Збережено в:' if is_ua else 'Saved to:'} {CYAN}{DOWNLOADS_DIR}{RESET}\n")
-            send_macos_notification(
-                "Медіа збережено! 🎉" if is_ua else "Media saved! 🎉",
-                "Відео готове у папці Завантаження" if is_ua else "Video ready in your Downloads folder"
-            )
+            if not is_batch:
+                msg_ok = "✅ Відео успішно завантажено та готове до перегляду!" if is_ua else "✅ Download completed successfully!"
+                print(f"\n{GREEN}{BOLD}{msg_ok}{RESET}")
+                print(f"📁 {'Збережено в:' if is_ua else 'Saved to:'} {CYAN}{DOWNLOADS_DIR}{RESET}\n")
+                send_macos_notification(
+                    "Медіа збережено! 🎉" if is_ua else "Media saved! 🎉",
+                    "Відео готове у папці Завантаження" if is_ua else "Video ready in your Downloads folder"
+                )
+            else:
+                msg_ok = "✅ Успішно завантажено та оптимізовано!" if is_ua else "✅ Downloaded and optimized!"
+                print(f"{GREEN}{msg_ok}{RESET}")
             return True
         else:
             print(f"\n{YELLOW}{'⚠️ Спроба обходу блокування YouTube через сесію браузера...' if is_ua else '⚠️ Retrying with browser session to bypass YouTube restriction...'}{RESET}")
@@ -455,13 +538,17 @@ def download_media(url, mode, selected_lang, ui_lang="en"):
                 proc_retry = subprocess.run(retry_cmd)
                 if proc_retry.returncode == 0:
                     process_downloaded_files()
-                    msg_ok = "✅ Відео успішно завантажено та готове до перегляду!" if is_ua else "✅ Download completed successfully!"
-                    print(f"\n{GREEN}{BOLD}{msg_ok}{RESET}")
-                    print(f"📁 {'Збережено в:' if is_ua else 'Saved to:'} {CYAN}{DOWNLOADS_DIR}{RESET}\n")
-                    send_macos_notification(
-                        "Медіа збережено! 🎉" if is_ua else "Media saved! 🎉",
-                        "Відео готове у папці Завантаження" if is_ua else "Video ready in your Downloads folder"
-                    )
+                    if not is_batch:
+                        msg_ok = "✅ Відео успішно завантажено та готове до перегляду!" if is_ua else "✅ Download completed successfully!"
+                        print(f"\n{GREEN}{BOLD}{msg_ok}{RESET}")
+                        print(f"📁 {'Збережено в:' if is_ua else 'Saved to:'} {CYAN}{DOWNLOADS_DIR}{RESET}\n")
+                        send_macos_notification(
+                            "Медіа збережено! 🎉" if is_ua else "Media saved! 🎉",
+                            "Відео готове у папці Завантаження" if is_ua else "Video ready in your Downloads folder"
+                        )
+                    else:
+                        msg_ok = "✅ Успішно завантажено та оптимізовано!" if is_ua else "✅ Downloaded and optimized!"
+                        print(f"{GREEN}{msg_ok}{RESET}")
                     return True
 
             print(f"\n{RED}{BOLD}{'❌ Не вдалося завершити завантаження.' if is_ua else '❌ Download failed.'}{RESET}\n")
@@ -477,23 +564,108 @@ def download_media(url, mode, selected_lang, ui_lang="en"):
                 pass
 
 
+def download_batch(urls, mode, selected_lang=None, ui_lang="en"):
+    """Пакетне послідовне завантаження списку посилань із загальним прогресом"""
+    is_ua = (ui_lang == "ua")
+    total = len(urls)
+    success_count = 0
+    failed_urls = []
+
+    print(f"\n{CYAN}{BOLD}╔═══════════════════════════════════════════════════╗{RESET}")
+    if is_ua:
+        print(f"{CYAN}{BOLD}║      📦 ПАКЕТНЕ ЗАВАНТАЖЕННЯ ({total} файл.)              ║{RESET}")
+    else:
+        print(f"{CYAN}{BOLD}║       📦 BATCH DOWNLOAD ({total} files)                  ║{RESET}")
+    print(f"{CYAN}{BOLD}╚═══════════════════════════════════════════════════╝{RESET}\n")
+
+    for idx, u in enumerate(urls, 1):
+        print(f"\n{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+        print(f"{BOLD}[{idx}/{total}]{RESET} ⏳ {u}")
+        print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+
+        ok = download_media(u, mode, selected_lang, ui_lang=ui_lang, is_batch=True, yes_playlist=False)
+        if ok:
+            success_count += 1
+            print(f"{GREEN}{BOLD}✔ [{idx}/{total}] {'Готово!' if is_ua else 'Done!'}{RESET}\n")
+        else:
+            failed_urls.append(u)
+            print(f"{RED}{BOLD}✖ [{idx}/{total}] {'Помилка завантаження (пропускаємо)' if is_ua else 'Download failed (skipping)'}{RESET}\n")
+
+    print(f"\n{CYAN}{BOLD}═══════════════════════════════════════════════════{RESET}")
+    if is_ua:
+        print(f"{GREEN}{BOLD}🎉 Пакетне завантаження завершено!{RESET}")
+        print(f"   ✅ Успішно збережено: {BOLD}{success_count} із {total}{RESET}")
+        if failed_urls:
+            print(f"   ⚠️ Помилок / не вдалося: {BOLD}{len(failed_urls)}{RESET}")
+        print(f"   📁 Збережено в: {CYAN}{DOWNLOADS_DIR}{RESET}")
+        send_macos_notification(
+            "Пакетне завантаження завершено! 🎉",
+            f"Успішно збережено {success_count} із {total} файлів"
+        )
+    else:
+        print(f"{GREEN}{BOLD}🎉 Batch download completed!{RESET}")
+        print(f"   ✅ Successfully saved: {BOLD}{success_count} of {total}{RESET}")
+        if failed_urls:
+            print(f"   ⚠️ Failed / skipped: {BOLD}{len(failed_urls)}{RESET}")
+        print(f"   📁 Saved to: {CYAN}{DOWNLOADS_DIR}{RESET}")
+        send_macos_notification(
+            "Batch download finished! 🎉",
+            f"Successfully saved {success_count} of {total} files"
+        )
+    print(f"{CYAN}{BOLD}═══════════════════════════════════════════════════{RESET}\n")
+    return success_count
+
+
 def main():
     ui_lang = get_initial_language()
     cfg = load_config()
-    next_url = None
+    next_batch = None
+    next_single = None
 
     while True:
         is_ua = (ui_lang == "ua")
         print_banner(ui_lang)
 
-        url = ""
-        if next_url:
-            url = next_url
-            next_url = None
-            print(f"🔗 {BOLD}URL:{RESET}\n   {CYAN}{url}{RESET}\n")
+        current_batch = None
+        single_url = None
+
+        if next_batch:
+            current_batch = next_batch
+            next_batch = None
+        elif next_single:
+            single_url = next_single
+            next_single = None
         else:
-            clip = get_clipboard_url()
-            if clip:
+            clip_urls = get_clipboard_urls()
+            if len(clip_urls) > 1:
+                print(f"📋 {BOLD}{f'Виявлено список із {len(clip_urls)} посилань у буфері обміну:' if is_ua else f'Detected list of {len(clip_urls)} links in clipboard:'}{RESET}")
+                for i, u in enumerate(clip_urls[:3], 1):
+                    print(f"   {i}. {CYAN}{u}{RESET}")
+                if len(clip_urls) > 3:
+                    print(f"   {GRAY}... {'та ще' if is_ua else 'and'} {len(clip_urls)-3} {'посилань' if is_ua else 'more links'}{RESET}")
+                print()
+                prompt_text = f"Натисніть [Enter], щоб завантажити всі {len(clip_urls)} файлів пакетно, або вставте інше: " if is_ua else f"Press [Enter] to download all {len(clip_urls)} files in batch, or paste another: "
+                ans = input(prompt_text).strip()
+                if ans.lower() in ["q", "quit", "exit"]:
+                    print("\nДо зустрічі!" if is_ua else "\nGoodbye!")
+                    break
+                elif ans.lower() in ["l", "lang", "language", "мова"]:
+                    ui_lang = "en" if is_ua else "ua"
+                    cfg["ui_lang"] = ui_lang
+                    save_config(cfg)
+                    continue
+                elif ans == "":
+                    current_batch = clip_urls
+                else:
+                    ext = extract_urls(ans)
+                    if len(ext) > 1:
+                        current_batch = ext
+                    elif len(ext) == 1:
+                        single_url = ext[0]
+                    else:
+                        single_url = ans
+            elif len(clip_urls) == 1:
+                clip = clip_urls[0]
                 print(f"📋 {BOLD}{'Виявлено посилання в буфері обміну:' if is_ua else 'Link detected in clipboard:'}{RESET}")
                 print(f"   {CYAN}{clip}{RESET}\n")
                 prompt_text = "Натисніть [Enter], щоб використати його, або вставте інше: " if is_ua else "Press [Enter] to use it, or paste another: "
@@ -507,48 +679,169 @@ def main():
                     save_config(cfg)
                     continue
                 elif ans == "":
-                    url = clip
+                    single_url = clip
                 else:
-                    url = ans
+                    ext = extract_urls(ans)
+                    if len(ext) > 1:
+                        current_batch = ext
+                    elif len(ext) == 1:
+                        single_url = ext[0]
+                    else:
+                        single_url = ans
             else:
-                prompt_text = "Вставте посилання на відео/аудіо (або [q] вихід): " if is_ua else "Paste video/audio link (or [q] quit): "
+                prompt_text = "Вставте посилання на відео/плейлист або список (чи [q] вихід): " if is_ua else "Paste video/playlist link or URL list (or [q] quit): "
                 ans = input(prompt_text).strip()
                 if ans.lower() in ["q", "quit", "exit"]:
                     print("\nДо зустрічі!" if is_ua else "\nGoodbye!")
                     break
-                elif ans.lower() in ["l", "lang", "language", "мова", "5"]:
+                elif ans.lower() in ["l", "lang", "language", "мова"]:
                     ui_lang = "en" if is_ua else "ua"
                     cfg["ui_lang"] = ui_lang
                     save_config(cfg)
                     continue
-                url = ans
+                ext = extract_urls(ans)
+                if len(ext) > 1:
+                    current_batch = ext
+                elif len(ext) == 1:
+                    single_url = ext[0]
+                else:
+                    single_url = ans
 
-        if not url:
+        if not current_batch and not single_url:
             continue
 
-        selected_lang = None
+        # Пакетний режим для списку посилань
+        if current_batch:
+            print(f"\n{BOLD}{f'Оберіть формат для пакетного завантаження ({len(current_batch)} файлів):' if is_ua else f'Choose format for batch download ({len(current_batch)} files):'}{RESET}")
+            print(f" {GREEN}[1]{RESET} 🎬 {'Відео MP4 (Найвища якість 1080p, QuickTime)' if is_ua else 'Video MP4 (Highest quality 1080p, QuickTime)'}")
+            print(f" {GREEN}[2]{RESET} 🎵 {'Лише музика / аудіо (MP3 320 kbps)' if is_ua else 'Audio only (MP3 320 kbps)'}")
+            print(f" {GREEN}[3]{RESET} ⚡ {'Швидке відео MP4 (720p HD)' if is_ua else 'Fast video MP4 (720p HD)'}")
+            print(f" {RED}[0]{RESET} ❌ {'Скасувати' if is_ua else 'Cancel'}")
 
-        print(f"\n{BOLD}{'Оберіть бажаний формат:' if is_ua else 'Choose format:'}{RESET}")
+            bchoice = input(f"\n{'Ваш вибір [1/2/3]' if is_ua else 'Your choice [1/2/3]'} (default 1): ").strip().lower()
+            if bchoice == "0":
+                continue
+            elif bchoice == "2":
+                target_mode = "2"
+            elif bchoice == "3":
+                target_mode = "3"
+            else:
+                target_mode = "1"
+
+            download_batch(current_batch, target_mode, None, ui_lang)
+
+            print(f"{CYAN}───────────────────────────────────────────────────{RESET}")
+            next_prompt = "Вставте наступне посилання або список, або натисніть [Enter] (чи [q] вихід): " if is_ua else "Paste next link or list, or press [Enter] (or [q] quit): "
+            nxt = input(next_prompt).strip()
+            if nxt.lower() in ["q", "quit", "exit"]:
+                print("\nДо зустрічі!" if is_ua else "\nGoodbye!")
+                break
+            elif nxt.lower() in ["l", "lang", "мова"]:
+                ui_lang = "en" if is_ua else "ua"
+                cfg["ui_lang"] = ui_lang
+                save_config(cfg)
+            else:
+                ext_nxt = extract_urls(nxt)
+                if len(ext_nxt) > 1:
+                    next_batch = ext_nxt
+                elif len(ext_nxt) == 1:
+                    next_single = ext_nxt[0]
+            continue
+
+        # Якщо одне посилання — перевіряємо, чи це плейлист
+        if is_playlist_url(single_url):
+            print(f"\n{BOLD}{'📋 Виявлено посилання на плейлист!' if is_ua else '📋 Playlist link detected!'}{RESET}")
+            print(f"   {CYAN}{single_url}{RESET}\n")
+            print(f" {GREEN}[1]{RESET} 📦 {'Завантажити весь плейлист (усі відео по черзі)' if is_ua else 'Download entire playlist (all videos sequentially)'}")
+            print(f" {GREEN}[2]{RESET} 🎬 {'Завантажити лише одне поточне відео' if is_ua else 'Download only single current video'}")
+            print(f" {RED}[0]{RESET} ❌ {'Скасувати' if is_ua else 'Cancel'}")
+
+            pl_choice = input(f"\n{'Ваш вибір [1/2]' if is_ua else 'Your choice [1/2]'} (default 1): ").strip().lower()
+            if pl_choice == "0":
+                continue
+            elif pl_choice in ["", "1"]:
+                pl_urls = get_playlist_urls(single_url, ui_lang=ui_lang)
+                if pl_urls:
+                    print(f"\n{BOLD}{f'Оберіть формат для плейлиста ({len(pl_urls)} відео):' if is_ua else f'Choose format for playlist ({len(pl_urls)} videos):'}{RESET}")
+                    print(f" {GREEN}[1]{RESET} 🎬 {'Відео MP4 (Найвища якість 1080p, QuickTime)' if is_ua else 'Video MP4 (Highest quality 1080p, QuickTime)'}")
+                    print(f" {GREEN}[2]{RESET} 🎵 {'Лише музика / аудіо (MP3 320 kbps)' if is_ua else 'Audio only (MP3 320 kbps)'}")
+                    print(f" {GREEN}[3]{RESET} ⚡ {'Швидке відео MP4 (720p HD)' if is_ua else 'Fast video MP4 (720p HD)'}")
+                    print(f" {RED}[0]{RESET} ❌ {'Скасувати' if is_ua else 'Cancel'}")
+
+                    bchoice = input(f"\n{'Ваш вибір [1/2/3]' if is_ua else 'Your choice [1/2/3]'} (default 1): ").strip().lower()
+                    if bchoice == "0":
+                        continue
+                    elif bchoice == "2":
+                        target_mode = "2"
+                    elif bchoice == "3":
+                        target_mode = "3"
+                    else:
+                        target_mode = "1"
+
+                    download_batch(pl_urls, target_mode, None, ui_lang)
+                else:
+                    print(f"\n{YELLOW}{'Завантажую весь плейлист напряму...' if is_ua else 'Downloading playlist directly...'}{RESET}")
+                    download_media(single_url, "1", None, ui_lang, is_batch=False, yes_playlist=True)
+
+                print(f"{CYAN}───────────────────────────────────────────────────{RESET}")
+                next_prompt = "Вставте наступне посилання або список, або натисніть [Enter] (чи [q] вихід): " if is_ua else "Paste next link or list, or press [Enter] (or [q] quit): "
+                nxt = input(next_prompt).strip()
+                if nxt.lower() in ["q", "quit", "exit"]:
+                    print("\nДо зустрічі!" if is_ua else "\nGoodbye!")
+                    break
+                elif nxt.lower() in ["l", "lang", "мова"]:
+                    ui_lang = "en" if is_ua else "ua"
+                    cfg["ui_lang"] = ui_lang
+                    save_config(cfg)
+                else:
+                    ext_nxt = extract_urls(nxt)
+                    if len(ext_nxt) > 1:
+                        next_batch = ext_nxt
+                    elif len(ext_nxt) == 1:
+                        next_single = ext_nxt[0]
+                continue
+
+        # Звичайне одиночне завантаження
+        selected_lang = None
+        print(f"🔗 {BOLD}URL:{RESET}\n   {CYAN}{single_url}{RESET}\n")
+        print(f"{BOLD}{'Оберіть бажаний формат:' if is_ua else 'Choose format:'}{RESET}")
         print(f" {GREEN}[1]{RESET} 🎬 {'Відео MP4 (Найвища якість 1080p, QuickTime)' if is_ua else 'Video MP4 (Highest quality 1080p, QuickTime)'}")
         print(f" {GREEN}[2]{RESET} 🎵 {'Лише музика / аудіо (MP3 320 kbps)' if is_ua else 'Audio only (MP3 320 kbps)'}")
         print(f" {GREEN}[3]{RESET} 🌐 {BOLD}{'Обрати мову дубляжу для YouTube' if is_ua else 'Choose audio dubbing language (YouTube)'}{RESET}")
         print(f" {GREEN}[4]{RESET} ⚡ {'Швидке відео MP4 (720p HD)' if is_ua else 'Fast video MP4 (720p HD)'}")
-        print(f" {CYAN}[5]{RESET} 🌍 {'Змінити мову інтерфейсу на English' if is_ua else 'Switch interface language to Українська'}")
+        print(f" {CYAN}[5]{RESET} 📦 {'Пакетне завантаження (вставити кілька посилань)' if is_ua else 'Batch download (paste multiple links)'}")
+        print(f" {CYAN}[6]{RESET} 🌍 {'Змінити мову інтерфейсу на English' if is_ua else 'Switch interface language to Українська'}")
         print(f" {RED}[0]{RESET} ❌ {'Скасувати' if is_ua else 'Cancel'}")
 
-        choice = input(f"\n{'Ваш вибір [1/2/3/4/5]' if is_ua else 'Your choice [1/2/3/4/5]'} (default 1): ").strip().lower()
+        choice = input(f"\n{'Ваш вибір [1/2/3/4/5/6]' if is_ua else 'Your choice [1/2/3/4/5/6]'} (default 1): ").strip().lower()
 
         if choice == "0":
             continue
-        elif choice in ["5", "l", "lang", "language", "мова"]:
+        elif choice in ["6", "l", "lang", "language", "мова"]:
             ui_lang = "en" if is_ua else "ua"
             cfg["ui_lang"] = ui_lang
             save_config(cfg)
-            next_url = url
+            next_single = single_url
+            continue
+        elif choice in ["5", "b", "batch"]:
+            p_text = "Вставте кілька посилань через пробіл або новий рядок (або натисніть [Enter] для посилань з буфера): " if is_ua else "Paste multiple links separated by space or newline (or press [Enter] to use clipboard): "
+            b_in = input(p_text).strip()
+            if not b_in:
+                clip_b = get_clipboard_urls()
+                if clip_b:
+                    next_batch = clip_b
+                else:
+                    print(f"{YELLOW}{'У буфері обміну немає посилань.' if is_ua else 'No links found in clipboard.'}{RESET}")
+            else:
+                ext_b = extract_urls(b_in)
+                if ext_b:
+                    next_batch = ext_b
+                else:
+                    print(f"{RED}{'Не знайдено валідних посилань.' if is_ua else 'No valid URLs found.'}{RESET}")
             continue
         elif choice == "3":
             print(f"\n{YELLOW}{'⏳ Отримую список доступних мов озвучки...' if is_ua else '⏳ Fetching available audio languages...'}{RESET}")
-            available_langs = get_video_audio_languages(url)
+            available_langs = get_video_audio_languages(single_url)
 
             if available_langs:
                 print(f"\n{BOLD}{'Знайдено такі мови аудіо:' if is_ua else 'Available audio tracks:'}{RESET}")
@@ -568,19 +861,19 @@ def main():
 
                 fmt_sub = input(f"{'Зберегти як: [1] Відео MP4 чи [2] Музику MP3? (за замовчуванням 1): ' if is_ua else 'Save as: [1] Video MP4 or [2] Audio MP3? (default 1): '}").strip()
                 target_mode = "2" if fmt_sub == "2" else "1"
-                download_media(url, target_mode, selected_lang, ui_lang)
+                download_media(single_url, target_mode, selected_lang, ui_lang, is_batch=False, yes_playlist=False)
             else:
                 print(f"\n{YELLOW}{'У цього відео стандартна єдина аудіодоріжка.' if is_ua else 'This video only has a single standard audio track.'}{RESET}")
-                download_media(url, "1", None, ui_lang)
+                download_media(single_url, "1", None, ui_lang, is_batch=False, yes_playlist=False)
         elif choice == "2":
-            download_media(url, "2", None, ui_lang)
+            download_media(single_url, "2", None, ui_lang, is_batch=False, yes_playlist=False)
         elif choice == "4":
-            download_media(url, "3", None, ui_lang)
+            download_media(single_url, "3", None, ui_lang, is_batch=False, yes_playlist=False)
         else:
-            download_media(url, "1", None, ui_lang)
+            download_media(single_url, "1", None, ui_lang, is_batch=False, yes_playlist=False)
 
         print(f"{CYAN}───────────────────────────────────────────────────{RESET}")
-        next_prompt = "Вставте наступне посилання, або натисніть [Enter] (чи [q] вихід): " if is_ua else "Paste next link, or press [Enter] (or [q] quit): "
+        next_prompt = "Вставте наступне посилання або список, або натисніть [Enter] (чи [q] вихід): " if is_ua else "Paste next link or list, or press [Enter] (or [q] quit): "
         nxt = input(next_prompt).strip()
         if nxt.lower() in ["q", "quit", "exit"]:
             print("\nДо зустрічі!" if is_ua else "\nGoodbye!")
@@ -589,11 +882,12 @@ def main():
             ui_lang = "en" if is_ua else "ua"
             cfg["ui_lang"] = ui_lang
             save_config(cfg)
-            next_url = None
-        elif nxt.startswith("http://") or nxt.startswith("https://"):
-            next_url = nxt
         else:
-            next_url = None
+            ext_nxt = extract_urls(nxt)
+            if len(ext_nxt) > 1:
+                next_batch = ext_nxt
+            elif len(ext_nxt) == 1:
+                next_single = ext_nxt[0]
 
 
 if __name__ == "__main__":

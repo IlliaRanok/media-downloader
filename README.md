@@ -16,7 +16,8 @@
 
 ### ✨ Головні можливості
 - **100% без реклами та спаму:** ніяких спливаючих вікон, підроблених кнопок чи платних підписок.
-- **Повна сумісність з Apple QuickTime:** відео автоматично зводиться в кодеки H.264 (AVC) + AAC і стандартний телевізійний діапазон (BT.709), тому воно бездоганно відкривається по натисканню **Пробілу (QuickLook)** у macOS Finder та на iOS.
+- **📦 Пакетне завантаження та підтримка плейлистів:** вставляйте кілька посилань одночасно або посилання на цілий плейлист — програма по черзі завантажить усі файли з відображенням прогресу `[X/N]` та єдиним підсумковим сповіщенням.
+- **Повна сумісність з Apple QuickTime:** кожне відео автоматично зводиться в кодеки H.264 (AVC) + AAC і стандартний телевізійний діапазон (BT.709), тому воно бездоганно відкривається по натисканню **Пробілу (QuickLook)** у macOS Finder та на iOS.
 - **Підтримка TikTok без водяних знаків.**
 - **Вибір мови дубляжу / аудіодоріжки:** збереження потрібної мови для багатомовних роликів YouTube (UA, EN тощо).
 - **Підтримка нативного MP3:** конвертація у високоякісне аудіо 320 kbps.
@@ -24,8 +25,8 @@
 
 ### 🚀 Як запустити з коду
 ```bash
-# 1. Клонувати або завантажити репозиторій
-git clone https://github.com/YOUR_USERNAME/media-downloader.git
+# 1. Клонувати репозиторій
+git clone https://github.com/IlliaRanok/media-downloader.git
 cd media-downloader
 
 # 2. Встановити залежності
@@ -44,6 +45,7 @@ python3 media_downloader_app.py
 
 ### ✨ Key Features
 - **100% Ad-Free:** Zero third-party trackers, zero popups, zero premium walls.
+- **📦 Batch & Playlist Downloading:** Paste multiple links at once or feed full playlist URLs — download entire queues with progress indicator `[X/N]` and consolidated notifications.
 - **Native Apple QuickTime & QuickLook Support:** Streams are finalized as Apple-compliant H.264 / AAC MP4 with BT.709 colorimetry and +faststart flags.
 - **Watermark-Free TikTok & Reels:** Direct progressive clean media capture.
 - **Multi-Language Audio Track Selector:** Pick your preferred dubbing track for international YouTube videos.
@@ -51,6 +53,8 @@ python3 media_downloader_app.py
 
 ### 🚀 Quick Start
 ```bash
+git clone https://github.com/IlliaRanok/media-downloader.git
+cd media-downloader
 pip install -r requirements.txt
 python3 media_downloader_app.py
 ```
