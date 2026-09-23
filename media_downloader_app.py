@@ -5,6 +5,7 @@ Media Downloader (YouTube, TikTok, Instagram, Twitter/X etc.)
 - First-run language setup (Default: English) with persistent config
 - Audio dubbing language selector (Ukrainian, English, etc.)
 - Batch & Playlist downloads with queue progress [X/N] and summary
+- In-app automatic self-updater (GitHub / Firebase)
 - Classic high-visibility banner
 """
 
@@ -16,6 +17,13 @@ import json
 import subprocess
 import shutil
 import tempfile
+import time
+
+APP_VERSION = "3.1.0"
+VERSION_URLS = [
+    "https://media-downloader-web.web.app/version.json",
+    "https://raw.githubusercontent.com/IlliaRanok/media-downloader/main/version.json",
+]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 VENV_BIN = os.path.join(SCRIPT_DIR, ".venv", "bin")
@@ -107,13 +115,177 @@ def print_banner(ui_lang="en"):
     print(f"{CYAN}{BOLD}")
     print("╔═══════════════════════════════════════════════════╗")
     if ui_lang == "ua":
-        print("║          📥 МЕДІА-ЗАВАНТАЖУВАЧ (1-КЛІК)           ║")
+        print(f"║          📥 МЕДІА-ЗАВАНТАЖУВАЧ (v{APP_VERSION})           ║")
         print("║    YouTube • TikTok • Instagram • Twitter • Web   ║")
     else:
-        print("║            📥 MEDIA DOWNLOADER (1-CLICK)          ║")
+        print(f"║            📥 MEDIA DOWNLOADER (v{APP_VERSION})           ║")
         print("║    YouTube • TikTok • Instagram • Twitter • Web   ║")
     print("╚═══════════════════════════════════════════════════╝")
     print(f"{RESET}")
+
+
+def parse_version(v_str):
+    parts = re.findall(r"\d+", str(v_str))
+    return tuple(int(p) for p in parts) if parts else (0,)
+
+
+def is_newer_version(remote_v, local_v):
+    return parse_version(remote_v) > parse_version(local_v)
+
+
+def check_for_updates(ui_lang="en", silent=True):
+    """
+    Перевіряє наявність оновлень на GitHub / Firebase.
+    silent=True: показує сповіщення лише якщо оновлення знайдено.
+    silent=False: показує статус пошуку та результат користувачу.
+    """
+    import urllib.request
+    import ssl
+
+    is_ua = (ui_lang == "ua")
+    if not silent:
+        print(f"\n{YELLOW}{'⏳ Перевіряю наявність оновлень...' if is_ua else '⏳ Checking for updates...'}{RESET}")
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    remote_data = None
+    for u in VERSION_URLS:
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "MediaDownloaderUpdater/3.0"})
+            with urllib.request.urlopen(req, timeout=2.5, context=ctx) as response:
+                if response.status == 200:
+                    remote_data = json.loads(response.read().decode("utf-8"))
+                    break
+        except Exception:
+            continue
+
+    if not remote_data:
+        if not silent:
+            print(f"{RED}{'❌ Не вдалося з’єднатися із сервером оновлень. Перевірте інтернет.' if is_ua else '❌ Could not reach update server. Check your connection.'}{RESET}\n")
+        return False
+
+    remote_ver = remote_data.get("version", "0.0.0")
+    if is_newer_version(remote_ver, APP_VERSION):
+        notes = remote_data.get("notes_ua" if is_ua else "notes_en", "")
+        print(f"\n{CYAN}{BOLD}╔════════════════════════════════════════════════════════════════╗{RESET}")
+        title_str = f"  ✨ Доступна нова версія: v{remote_ver} (поточна: v{APP_VERSION})" if is_ua else f"  ✨ New version available: v{remote_ver} (current: v{APP_VERSION})"
+        pad = max(1, 62 - len(title_str))
+        print(f"{CYAN}{BOLD}║{GREEN}{title_str}{' ' * pad}{CYAN}║{RESET}")
+        if notes:
+            note_line = f"  📢 Що нового: {notes[:46]}" if is_ua else f"  📢 What's new: {notes[:45]}"
+            note_pad = max(1, 62 - len(note_line))
+            print(f"{CYAN}{BOLD}║{WHITE}{note_line}{' ' * note_pad}{CYAN}║{RESET}")
+        print(f"{CYAN}{BOLD}╚════════════════════════════════════════════════════════════════╝{RESET}\n")
+
+        prompt = "Оновити програму зараз? [Y/n] (Enter = Так): " if is_ua else "Update program now? [Y/n] (Enter = Yes): "
+        ans = input(prompt).strip().lower()
+        if ans in ["", "y", "yes", "так", "д", "да"]:
+            return perform_self_update(remote_data, ui_lang)
+        else:
+            print(f"{GRAY}{'Оновлення відкладено.' if is_ua else 'Update postponed.'}{RESET}\n")
+            return False
+    else:
+        if not silent:
+            print(f"{GREEN}{BOLD}{f'✅ У вас встановлена найновіша версія (v{APP_VERSION})!' if is_ua else f'✅ You are running the latest version (v{APP_VERSION})!'}{RESET}\n")
+        return False
+
+
+def perform_self_update(remote_data, ui_lang="en"):
+    """
+    Завантажує новий код, валідує синтаксис та безпечно замінює поточний файл.
+    Також оновлює yt-dlp і перезапускає програму.
+    """
+    import urllib.request
+    import ssl
+    import py_compile
+
+    is_ua = (ui_lang == "ua")
+    print(f"\n{YELLOW}{'⏳ Завантажую оновлений скрипт...' if is_ua else '⏳ Downloading updated script...'}{RESET}")
+
+    candidate_urls = [
+        remote_data.get("script_url"),
+        remote_data.get("script_url_fallback"),
+        "https://media-downloader-web.web.app/media_downloader_app.py",
+        "https://raw.githubusercontent.com/IlliaRanok/media-downloader/main/media_downloader_app.py",
+    ]
+    candidate_urls = [u for u in candidate_urls if u]
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    script_content = None
+    for u in candidate_urls:
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "MediaDownloaderUpdater/3.0"})
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                if resp.status == 200:
+                    raw = resp.read().decode("utf-8")
+                    if "Media Downloader" in raw and len(raw) > 5000:
+                        script_content = raw
+                        break
+        except Exception:
+            continue
+
+    if not script_content:
+        print(f"{RED}{'❌ Помилка: не вдалося завантажити файл оновлення.' if is_ua else '❌ Error: Failed to download update file.'}{RESET}\n")
+        return False
+
+    current_script_path = os.path.abspath(__file__)
+    dir_name = os.path.dirname(current_script_path)
+    temp_target = os.path.join(dir_name, ".temp_update_app.py")
+
+    try:
+        with open(temp_target, "w", encoding="utf-8") as f:
+            f.write(script_content)
+
+        try:
+            py_compile.compile(temp_target, doraise=True)
+        except py_compile.PyCompileError as e:
+            print(f"{RED}{'❌ Помилка синтаксису оновленого файлу:' if is_ua else '❌ Update file syntax error:'} {e}{RESET}")
+            if os.path.exists(temp_target):
+                os.remove(temp_target)
+            return False
+
+        if os.path.exists(current_script_path):
+            try:
+                os.chmod(temp_target, 0o755)
+            except Exception:
+                pass
+            shutil.move(temp_target, current_script_path)
+
+        # Оновлення рушія yt-dlp
+        print(f"{YELLOW}{'⏳ Оновлюю медіа-рушій yt-dlp...' if is_ua else '⏳ Updating media engine yt-dlp...'}{RESET}")
+        try:
+            ytdlp_cmd = [YT_DLP_BIN, "-U"] if (YT_DLP_BIN and YT_DLP_BIN != "yt-dlp") else [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
+            subprocess.run(ytdlp_cmd, capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+        print(f"\n{GREEN}{BOLD}{'🎉 Програму успішно оновлено! Перезапускаю...' if is_ua else '🎉 Program updated successfully! Restarting...'}{RESET}\n")
+        restart_application()
+        return True
+
+    except Exception as e:
+        print(f"{RED}{'❌ Помилка при застосуванні оновлення:' if is_ua else '❌ Error applying update:'} {e}{RESET}\n")
+        if os.path.exists(temp_target):
+            try:
+                os.remove(temp_target)
+            except Exception:
+                pass
+        return False
+
+
+def restart_application():
+    """Перезапускає поточний скрипт без необхідності відкривати термінал заново"""
+    time.sleep(1)
+    if os.name == "nt":
+        subprocess.Popen([sys.executable] + sys.argv)
+        sys.exit(0)
+    else:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def get_initial_language():
@@ -125,7 +297,7 @@ def get_initial_language():
     clear_screen()
     print(f"{CYAN}{BOLD}")
     print("╔═══════════════════════════════════════════════════╗")
-    print("║            📥 MEDIA DOWNLOADER (1-CLICK)          ║")
+    print(f"║            📥 MEDIA DOWNLOADER (v{APP_VERSION})           ║")
     print("║    YouTube • TikTok • Instagram • Twitter • Web   ║")
     print("╚═══════════════════════════════════════════════════╝")
     print(f"{RESET}")
@@ -619,6 +791,15 @@ def download_batch(urls, mode, selected_lang=None, ui_lang="en"):
 def main():
     ui_lang = get_initial_language()
     cfg = load_config()
+
+    # Автоматична перевірка наявності оновлень при запуску (тихий режим)
+    try:
+        updated = check_for_updates(ui_lang=ui_lang, silent=True)
+        if updated:
+            return
+    except Exception:
+        pass
+
     next_batch = None
     next_single = None
 
@@ -654,6 +835,10 @@ def main():
                     cfg["ui_lang"] = ui_lang
                     save_config(cfg)
                     continue
+                elif ans.lower() in ["u", "update", "оновлення", "7"]:
+                    check_for_updates(ui_lang=ui_lang, silent=False)
+                    input(f"\n{'Натисніть [Enter], щоб продовжити...' if is_ua else 'Press [Enter] to continue...'}")
+                    continue
                 elif ans == "":
                     current_batch = clip_urls
                 else:
@@ -678,6 +863,10 @@ def main():
                     cfg["ui_lang"] = ui_lang
                     save_config(cfg)
                     continue
+                elif ans.lower() in ["u", "update", "оновлення", "7"]:
+                    check_for_updates(ui_lang=ui_lang, silent=False)
+                    input(f"\n{'Натисніть [Enter], щоб продовжити...' if is_ua else 'Press [Enter] to continue...'}")
+                    continue
                 elif ans == "":
                     single_url = clip
                 else:
@@ -698,6 +887,10 @@ def main():
                     ui_lang = "en" if is_ua else "ua"
                     cfg["ui_lang"] = ui_lang
                     save_config(cfg)
+                    continue
+                elif ans.lower() in ["u", "update", "оновлення", "7"]:
+                    check_for_updates(ui_lang=ui_lang, silent=False)
+                    input(f"\n{'Натисніть [Enter], щоб продовжити...' if is_ua else 'Press [Enter] to continue...'}")
                     continue
                 ext = extract_urls(ans)
                 if len(ext) > 1:
@@ -740,6 +933,9 @@ def main():
                 ui_lang = "en" if is_ua else "ua"
                 cfg["ui_lang"] = ui_lang
                 save_config(cfg)
+            elif nxt.lower() in ["u", "update", "7"]:
+                check_for_updates(ui_lang=ui_lang, silent=False)
+                input(f"\n{'Натисніть [Enter], щоб продовжити...' if is_ua else 'Press [Enter] to continue...'}")
             else:
                 ext_nxt = extract_urls(nxt)
                 if len(ext_nxt) > 1:
@@ -793,6 +989,9 @@ def main():
                     ui_lang = "en" if is_ua else "ua"
                     cfg["ui_lang"] = ui_lang
                     save_config(cfg)
+                elif nxt.lower() in ["u", "update", "7"]:
+                    check_for_updates(ui_lang=ui_lang, silent=False)
+                    input(f"\n{'Натисніть [Enter], щоб продовжити...' if is_ua else 'Press [Enter] to continue...'}")
                 else:
                     ext_nxt = extract_urls(nxt)
                     if len(ext_nxt) > 1:
@@ -811,9 +1010,10 @@ def main():
         print(f" {GREEN}[4]{RESET} ⚡ {'Швидке відео MP4 (720p HD)' if is_ua else 'Fast video MP4 (720p HD)'}")
         print(f" {CYAN}[5]{RESET} 📦 {'Пакетне завантаження (вставити кілька посилань)' if is_ua else 'Batch download (paste multiple links)'}")
         print(f" {CYAN}[6]{RESET} 🌍 {'Змінити мову інтерфейсу на English' if is_ua else 'Switch interface language to Українська'}")
+        print(f" {CYAN}[7]{RESET} 🔄 {'Перевірити наявність оновлень' if is_ua else 'Check for updates'}")
         print(f" {RED}[0]{RESET} ❌ {'Скасувати' if is_ua else 'Cancel'}")
 
-        choice = input(f"\n{'Ваш вибір [1/2/3/4/5/6]' if is_ua else 'Your choice [1/2/3/4/5/6]'} (default 1): ").strip().lower()
+        choice = input(f"\n{'Ваш вибір [1/2/3/4/5/6/7]' if is_ua else 'Your choice [1/2/3/4/5/6/7]'} (default 1): ").strip().lower()
 
         if choice == "0":
             continue
@@ -821,6 +1021,11 @@ def main():
             ui_lang = "en" if is_ua else "ua"
             cfg["ui_lang"] = ui_lang
             save_config(cfg)
+            next_single = single_url
+            continue
+        elif choice in ["7", "u", "update", "оновлення"]:
+            check_for_updates(ui_lang=ui_lang, silent=False)
+            input(f"\n{'Натисніть [Enter], щоб продовжити...' if is_ua else 'Press [Enter] to continue...'}")
             next_single = single_url
             continue
         elif choice in ["5", "b", "batch"]:
@@ -882,6 +1087,9 @@ def main():
             ui_lang = "en" if is_ua else "ua"
             cfg["ui_lang"] = ui_lang
             save_config(cfg)
+        elif nxt.lower() in ["u", "update", "7"]:
+            check_for_updates(ui_lang=ui_lang, silent=False)
+            input(f"\n{'Натисніть [Enter], щоб продовжити...' if is_ua else 'Press [Enter] to continue...'}")
         else:
             ext_nxt = extract_urls(nxt)
             if len(ext_nxt) > 1:

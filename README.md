@@ -22,6 +22,7 @@
 - **Вибір мови дубляжу / аудіодоріжки:** збереження потрібної мови для багатомовних роликів YouTube (UA, EN тощо).
 - **Підтримка нативного MP3:** конвертація у високоякісне аудіо 320 kbps.
 - **1-клік лаунчери:** готові подвійні кліки для Mac (`.app`) та Windows (`.bat` з автоматичним створенням ярлика на Робочому столі).
+- **🔄 Вбудоване самооновлення (Self-Update):** програма автоматично перевіряє наявність нових версій і оновлюється в 1 клік без ручного перекачування архівів.
 
 ### 🚀 Як запустити з коду
 ```bash
@@ -50,6 +51,7 @@ python3 media_downloader_app.py
 - **Watermark-Free TikTok & Reels:** Direct progressive clean media capture.
 - **Multi-Language Audio Track Selector:** Pick your preferred dubbing track for international YouTube videos.
 - **Audio Extraction:** High-bitrate stereo MP3 extraction in one tap.
+- **🔄 In-App Self-Update:** Automatically checks for new releases and updates in 1-click without re-downloading archives.
 
 ### 🚀 Quick Start
 ```bash
