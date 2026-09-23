@@ -154,9 +154,17 @@ def check_for_updates(ui_lang="en", silent=True):
     ctx.verify_mode = ssl.CERT_NONE
 
     remote_data = None
+    cache_buster = f"?t={int(time.time())}"
     for u in VERSION_URLS:
         try:
-            req = urllib.request.Request(u, headers={"User-Agent": "MediaDownloaderUpdater/3.0"})
+            req = urllib.request.Request(
+                f"{u}{cache_buster}",
+                headers={
+                    "User-Agent": "MediaDownloaderUpdater/3.0",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache"
+                }
+            )
             with urllib.request.urlopen(req, timeout=2.5, context=ctx) as response:
                 if response.status == 200:
                     remote_data = json.loads(response.read().decode("utf-8"))
@@ -169,8 +177,13 @@ def check_for_updates(ui_lang="en", silent=True):
             print(f"{RED}{'❌ Не вдалося з’єднатися із сервером оновлень. Перевірте інтернет.' if is_ua else '❌ Could not reach update server. Check your connection.'}{RESET}\n")
         return False
 
-    remote_ver = remote_data.get("version", "0.0.0")
+    remote_ver = str(remote_data.get("version", "0.0.0")).strip()
     if is_newer_version(remote_ver, APP_VERSION):
+        cfg = load_config()
+        # Якщо в тихому фоновому режимі користувач уже натискав відкласти для цієї версії — не турбуємо повторно
+        if silent and cfg.get("postponed_version") == remote_ver:
+            return False
+
         notes = remote_data.get("notes_ua" if is_ua else "notes_en", "")
         print(f"\n{CYAN}{BOLD}╔════════════════════════════════════════════════════════════════╗{RESET}")
         title_str = f"  ✨ Доступна нова версія: v{remote_ver} (поточна: v{APP_VERSION})" if is_ua else f"  ✨ New version available: v{remote_ver} (current: v{APP_VERSION})"
@@ -185,9 +198,14 @@ def check_for_updates(ui_lang="en", silent=True):
         prompt = "Оновити програму зараз? [Y/n] (Enter = Так): " if is_ua else "Update program now? [Y/n] (Enter = Yes): "
         ans = input(prompt).strip().lower()
         if ans in ["", "y", "yes", "так", "д", "да"]:
+            if "postponed_version" in cfg:
+                del cfg["postponed_version"]
+                save_config(cfg)
             return perform_self_update(remote_data, ui_lang)
         else:
             print(f"{GRAY}{'Оновлення відкладено.' if is_ua else 'Update postponed.'}{RESET}\n")
+            cfg["postponed_version"] = remote_ver
+            save_config(cfg)
             return False
     else:
         if not silent:
@@ -207,13 +225,14 @@ def perform_self_update(remote_data, ui_lang="en"):
     is_ua = (ui_lang == "ua")
     print(f"\n{YELLOW}{'⏳ Завантажую оновлений скрипт...' if is_ua else '⏳ Downloading updated script...'}{RESET}")
 
-    candidate_urls = [
+    cache_buster = f"?t={int(time.time())}"
+    raw_urls = [
         remote_data.get("script_url"),
         remote_data.get("script_url_fallback"),
         "https://media-downloader-web.web.app/media_downloader_app.py",
         "https://raw.githubusercontent.com/IlliaRanok/media-downloader/main/media_downloader_app.py",
     ]
-    candidate_urls = [u for u in candidate_urls if u]
+    candidate_urls = [f"{u}{cache_buster}" for u in raw_urls if u]
 
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -222,18 +241,28 @@ def perform_self_update(remote_data, ui_lang="en"):
     script_content = None
     for u in candidate_urls:
         try:
-            req = urllib.request.Request(u, headers={"User-Agent": "MediaDownloaderUpdater/3.0"})
+            req = urllib.request.Request(
+                u,
+                headers={
+                    "User-Agent": "MediaDownloaderUpdater/3.0",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache"
+                }
+            )
             with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                 if resp.status == 200:
                     raw = resp.read().decode("utf-8")
                     if "Media Downloader" in raw and len(raw) > 5000:
-                        script_content = raw
-                        break
+                        vm = re.search(r"APP_VERSION\s*=\s*\"([^\"]+)\"", raw)
+                        dl_ver = vm.group(1) if vm else "0.0.0"
+                        if is_newer_version(dl_ver, APP_VERSION):
+                            script_content = raw
+                            break
         except Exception:
             continue
 
     if not script_content:
-        print(f"{RED}{'❌ Помилка: не вдалося завантажити файл оновлення.' if is_ua else '❌ Error: Failed to download update file.'}{RESET}\n")
+        print(f"{RED}{'❌ Помилка: не вдалося завантажити свіжий файл оновлення (можливо, кеш ще оновлюється).' if is_ua else '❌ Error: Failed to download fresh update file.'}{RESET}\n")
         return False
 
     current_script_path = os.path.abspath(__file__)
