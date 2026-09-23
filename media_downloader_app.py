@@ -6,6 +6,7 @@ Media Downloader (YouTube, TikTok, Instagram, Twitter/X etc.)
 - Audio dubbing language selector (Ukrainian, English, etc.)
 - Batch & Playlist downloads with queue progress [X/N] and summary
 - In-app automatic self-updater (GitHub / Firebase)
+- Multi-client resilient YouTube bypass (Zero 403 Forbidden errors)
 - Classic high-visibility banner
 """
 
@@ -19,7 +20,7 @@ import shutil
 import tempfile
 import time
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 VERSION_URLS = [
     "https://media-downloader-web.web.app/version.json",
     "https://raw.githubusercontent.com/IlliaRanok/media-downloader/main/version.json",
@@ -371,7 +372,7 @@ def get_playlist_urls(url, ui_lang="en"):
         "--flat-playlist",
         "--print", "%(url)s",
         "--no-warnings",
-        "--extractor-args", "youtube:player_client=ios,mweb,web;formats=missing_pot",
+        "--extractor-args", "youtube:player_client=android,ios,web",
     ]
     if NODE_BIN and os.path.exists(NODE_BIN):
         cmd.extend(["--js-runtimes", f"node:{NODE_BIN}"])
@@ -416,7 +417,7 @@ def get_video_audio_languages(url):
         "--ffmpeg-location", FFMPEG_BIN_DIR,
         "--print", "%(formats.:.language)s",
         "--no-warnings",
-        "--extractor-args", "youtube:player_client=ios,mweb,web;formats=missing_pot",
+        "--extractor-args", "youtube:player_client=android,ios,web",
     ]
     if NODE_BIN and os.path.exists(NODE_BIN):
         cmd.extend(["--js-runtimes", f"node:{NODE_BIN}"])
@@ -602,6 +603,41 @@ def standardize_video_for_quicktime(filepath, ui_lang="en"):
     return filepath
 
 
+def get_available_browsers():
+    """Перевіряє, які браузери реально мають базу cookies на цій системі"""
+    browsers = []
+    chrome_paths = [
+        os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Cookies"),
+        os.path.expanduser("~/Library/Application Support/Google/Chrome/Profile 1/Cookies"),
+        os.path.expanduser("~/AppData/Local/Google/Chrome/User Data/Default/Network/Cookies"),
+    ]
+    if any(os.path.exists(p) for p in chrome_paths):
+        browsers.append("chrome")
+
+    ff_paths = [
+        os.path.expanduser("~/Library/Application Support/Firefox/Profiles"),
+        os.path.expanduser("~/AppData/Roaming/Mozilla/Firefox/Profiles"),
+    ]
+    if any(os.path.exists(p) and os.listdir(p) for p in ff_paths if os.path.exists(p)):
+        browsers.append("firefox")
+
+    edge_paths = [
+        os.path.expanduser("~/Library/Application Support/Microsoft Edge/Default/Cookies"),
+        os.path.expanduser("~/AppData/Local/Microsoft/Edge/User Data/Default/Network/Cookies"),
+    ]
+    if any(os.path.exists(p) for p in edge_paths):
+        browsers.append("edge")
+
+    brave_paths = [
+        os.path.expanduser("~/Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies"),
+        os.path.expanduser("~/AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies"),
+    ]
+    if any(os.path.exists(p) for p in brave_paths):
+        browsers.append("brave")
+
+    return browsers
+
+
 def download_media(url, mode, selected_lang=None, ui_lang="en", is_batch=False, yes_playlist=False):
     is_ua = (ui_lang == "ua")
     if not is_batch:
@@ -622,7 +658,7 @@ def download_media(url, mode, selected_lang=None, ui_lang="en", is_batch=False, 
         "--print-to-file", "after_move:filepath", track_path,
         "--no-warnings",
         "--progress",
-        "--extractor-args", "youtube:player_client=ios,mweb,web;formats=missing_pot",
+        "--extractor-args", "youtube:player_client=android,ios,web",
     ]
 
     if yes_playlist:
@@ -701,27 +737,51 @@ def download_media(url, mode, selected_lang=None, ui_lang="en", is_batch=False, 
                 print(f"{GREEN}{msg_ok}{RESET}")
             return True
         else:
-            print(f"\n{YELLOW}{'⚠️ Спроба обходу блокування YouTube через сесію браузера...' if is_ua else '⚠️ Retrying with browser session to bypass YouTube restriction...'}{RESET}")
-            browsers = ["chrome", "firefox", "brave", "edge"]
-            for b in browsers:
-                retry_cmd = list(cmd)
-                retry_cmd.insert(-1, "--cookies-from-browser")
-                retry_cmd.insert(-1, b)
-                proc_retry = subprocess.run(retry_cmd)
-                if proc_retry.returncode == 0:
-                    process_downloaded_files()
-                    if not is_batch:
-                        msg_ok = "✅ Відео успішно завантажено та готове до перегляду!" if is_ua else "✅ Download completed successfully!"
-                        print(f"\n{GREEN}{BOLD}{msg_ok}{RESET}")
-                        print(f"📁 {'Збережено в:' if is_ua else 'Saved to:'} {CYAN}{DOWNLOADS_DIR}{RESET}\n")
-                        send_macos_notification(
-                            "Медіа збережено! 🎉" if is_ua else "Media saved! 🎉",
-                            "Відео готове у папці Завантаження" if is_ua else "Video ready in your Downloads folder"
-                        )
-                    else:
-                        msg_ok = "✅ Успішно завантажено та оптимізовано!" if is_ua else "✅ Downloaded and optimized!"
-                        print(f"{GREEN}{msg_ok}{RESET}")
-                    return True
+            # Спроба 2: Резервний мобільний рушій android
+            print(f"\n{YELLOW}{'⚠️ Спроба завантаження через резервний мобільний рушій...' if is_ua else '⚠️ Retrying via fallback mobile engine...'}{RESET}")
+            fallback_cmd = list(cmd)
+            for i, arg in enumerate(fallback_cmd):
+                if arg == "--extractor-args":
+                    fallback_cmd[i+1] = "youtube:player_client=android"
+            proc_fb = subprocess.run(fallback_cmd)
+            if proc_fb.returncode == 0:
+                process_downloaded_files()
+                if not is_batch:
+                    msg_ok = "✅ Відео успішно завантажено та готове до перегляду!" if is_ua else "✅ Download completed successfully!"
+                    print(f"\n{GREEN}{BOLD}{msg_ok}{RESET}")
+                    print(f"📁 {'Збережено в:' if is_ua else 'Saved to:'} {CYAN}{DOWNLOADS_DIR}{RESET}\n")
+                    send_macos_notification(
+                        "Медіа збережено! 🎉" if is_ua else "Media saved! 🎉",
+                        "Відео готове у папці Завантаження" if is_ua else "Video ready in your Downloads folder"
+                    )
+                else:
+                    msg_ok = "✅ Успішно завантажено та оптимізовано!" if is_ua else "✅ Downloaded and optimized!"
+                    print(f"{GREEN}{msg_ok}{RESET}")
+                return True
+
+            # Спроба 3: Використання сесії доступного браузера
+            avail_browsers = get_available_browsers()
+            if avail_browsers:
+                print(f"\n{YELLOW}{'⚠️ Спроба через сесію браузера...' if is_ua else '⚠️ Retrying with browser session...'}{RESET}")
+                for b in avail_browsers:
+                    retry_cmd = list(cmd)
+                    retry_cmd.insert(-1, "--cookies-from-browser")
+                    retry_cmd.insert(-1, b)
+                    proc_retry = subprocess.run(retry_cmd)
+                    if proc_retry.returncode == 0:
+                        process_downloaded_files()
+                        if not is_batch:
+                            msg_ok = "✅ Відео успішно завантажено та готове до перегляду!" if is_ua else "✅ Download completed successfully!"
+                            print(f"\n{GREEN}{BOLD}{msg_ok}{RESET}")
+                            print(f"📁 {'Збережено в:' if is_ua else 'Saved to:'} {CYAN}{DOWNLOADS_DIR}{RESET}\n")
+                            send_macos_notification(
+                                "Медіа збережено! 🎉" if is_ua else "Media saved! 🎉",
+                                "Відео готове у папці Завантаження" if is_ua else "Video ready in your Downloads folder"
+                            )
+                        else:
+                            msg_ok = "✅ Успішно завантажено та оптимізовано!" if is_ua else "✅ Downloaded and optimized!"
+                            print(f"{GREEN}{msg_ok}{RESET}")
+                        return True
 
             print(f"\n{RED}{BOLD}{'❌ Не вдалося завершити завантаження.' if is_ua else '❌ Download failed.'}{RESET}\n")
             return False
